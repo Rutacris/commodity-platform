@@ -1,0 +1,9 @@
+requests==2.31.0
+beautifulsoup4==4.12.3
+lxml==5.1.0             # faster HTML parser for bs4
+pandas==2.2.1
+openpyxl==3.1.2         # .xlsx support
+xlrd==2.0.1             # .xls support
+pdfplumber==0.11.0      # PDF text extraction (MINAGRI)
+psycopg2-binary==2.9.9
+html5lib==1.1           # fallback HTML parser for pd.read_html

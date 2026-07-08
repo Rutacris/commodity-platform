@@ -1,0 +1,94 @@
+version: '3.9'
+
+# All secrets come from .env — nothing hardcoded here.
+# Run: docker compose --env-file .env up -d
+
+services:
+
+  # ── Database ─────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    container_name: commodity_db
+    restart: always
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+    volumes:
+      - ./db:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"   # bind to localhost only — not exposed externally
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend API ───────────────────────────────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: commodity_backend
+    restart: always
+    expose:
+      - "8000"                  # internal only — Nginx handles external traffic
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_NAME:         ${APP_NAME}
+      APP_VERSION:      ${APP_VERSION}
+      DEBUG:            ${DEBUG}
+      DB_HOST:          postgres
+      DB_PORT:          ${DB_PORT}
+      DB_NAME:          ${POSTGRES_DB}
+      DB_USER:          ${POSTGRES_USER}
+      DB_PASSWORD:      ${POSTGRES_PASSWORD}
+      OLLAMA_HOST:      ${OLLAMA_HOST}
+      OLLAMA_MODEL:     ${OLLAMA_MODEL}
+      CORS_ORIGINS:     ${CORS_ORIGINS}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Scraper ───────────────────────────────────────────────────────────────────
+  scraper:
+    build: ./scraper
+    container_name: commodity_scraper
+    restart: "no"             # run-once — controlled by cron
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST:      postgres
+      DB_PORT:      ${DB_PORT}
+      DB_NAME:      ${POSTGRES_DB}
+      DB_USER:      ${POSTGRES_USER}
+      DB_PASSWORD:  ${POSTGRES_PASSWORD}
+      OLLAMA_HOST:  ${OLLAMA_HOST}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+    volumes:
+      - ./scraper/logs:/app/logs
+      - ./scraper/data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # To run a specific source only, uncomment:
+    # command: ["python", "main.py", "--sources", "manual", "wfp"]
+
+  # ── Nginx reverse proxy ────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: commodity_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      backend:
+        condition: service_healthy

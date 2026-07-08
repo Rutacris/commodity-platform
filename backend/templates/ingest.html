@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Commodity Data Ingestion</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; background: #f8fafc; color: #111827; }
+    .card { background: white; border-radius: 12px; padding: 1.5rem; max-width: 900px; margin: 0 auto 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    h1, h2 { margin-top: 0; }
+    label { display: block; margin-top: 0.8rem; font-weight: 600; }
+    input, textarea, select, button { width: 100%; padding: 0.7rem; margin-top: 0.3rem; border-radius: 8px; border: 1px solid #cbd5e1; }
+    button { background: #2563eb; color: white; border: none; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    .tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .tab { padding: 0.6rem 1rem; border: 1px solid #cbd5e1; background: #fff; border-radius: 999px; cursor: pointer; }
+    .tab.active { background: #2563eb; color: white; border-color: #2563eb; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .hint { font-size: 0.9rem; color: #64748b; margin-top: 0.4rem; }
+    .result { margin-top: 1rem; white-space: pre-wrap; background: #f8fafc; padding: 0.8rem; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Add new price data</h1>
+    <p>Use one of the methods below to import commodity prices into the system.</p>
+    <div class="tabs">
+      <div class="tab active" data-target="file">Upload file</div>
+      <div class="tab" data-target="text">Written text</div>
+      <div class="tab" data-target="url">Link / URL</div>
+    </div>
+
+    <div id="file" class="panel active">
+      <form id="fileForm" enctype="multipart/form-data">
+        <label for="file">CSV, Excel, or text file</label>
+        <input type="file" id="file" name="file" required />
+        <label for="fileSource">Source label</label>
+        <input type="text" id="fileSource" name="source" placeholder="e.g. weekly-report" />
+        <button type="submit">Upload data</button>
+      </form>
+    </div>
+
+    <div id="text" class="panel">
+      <form id="textForm">
+        <label for="textInput">Paste rows</label>
+        <textarea id="textInput" name="text" rows="10" placeholder="commodity,market,price,date&#10;Maize,Kigali,1200,2026-07-08"></textarea>
+        <label for="textSource">Source label</label>
+        <input type="text" id="textSource" name="source" placeholder="e.g. manual-entry" />
+        <button type="submit">Import text</button>
+      </form>
+    </div>
+
+    <div id="url" class="panel">
+      <form id="urlForm">
+        <label for="urlInput">Remote CSV or Excel URL</label>
+        <input type="url" id="urlInput" name="url" placeholder="https://example.com/prices.csv" required />
+        <label for="urlSource">Source label</label>
+        <input type="text" id="urlSource" name="source" placeholder="e.g. external-feed" />
+        <button type="submit">Import from link</button>
+      </form>
+    </div>
+
+    <div id="result" class="result">No import yet.</div>
+  </div>
+
+  <script>
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.target).classList.add('active');
+      });
+    });
+
+    const resultBox = document.getElementById('result');
+
+    document.getElementById('fileForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const res = await fetch('/ingest/file', { method: 'POST', body: formData });
+      resultBox.textContent = await res.text();
+    });
+
+    document.getElementById('textForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const res = await fetch('/ingest/text', { method: 'POST', body: formData });
+      resultBox.textContent = await res.text();
+    });
+
+    document.getElementById('urlForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const res = await fetch('/ingest/url', { method: 'POST', body: formData });
+      resultBox.textContent = await res.text();
+    });
+  </script>
+</body>
+</html>
