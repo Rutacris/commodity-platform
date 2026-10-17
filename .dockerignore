@@ -1,0 +1,9 @@
+db/
+!db/migrations/
+demo/data/
+tests/.synth/
+**/__pycache__/
+.git/
+scraper/
+backend/
+nginx/
