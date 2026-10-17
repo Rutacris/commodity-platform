@@ -33,12 +33,90 @@ Vegetables: tomatoes, onions, cabbage, carrots.
 Animal products: eggs (tray), fresh milk (litre), beef, fish (tilapia).
 Other: cooking oil (litre), sugar, salt, charcoal (sack).
 
-### Implications of the home server [J]
-- **Phones never talk to the home server directly.** Enumerators submit to **KoboToolbox's hosted server** (works offline, stores submissions even if the home server or home internet is down). The platform **pulls** new submissions from the Kobo API every few minutes → no inbound webhook, no lost data during outages. Confirm Kobo free-plan limits (one submission per market per session with a repeat group = ~180 submissions/month).
-- Publish the site through **Cloudflare Tunnel** (or similar) instead of opening router ports; no static IP needed, TLS handled.
-- **UPS** for the server and router; Docker `restart: always` (already set).
-- **Backups off-site**: nightly `pg_dump` (or pgBackRest, included in the timescaledb-ha image) encrypted to cloud storage; test a restore monthly.
-- Ollama on the same box: fine at this volume; keep it optional so the platform runs without it.
+---
+
+## 0b. Data engineering infrastructure (single home server)
+
+No domain for now. Everything runs in Docker Compose on one internet-connected server running **Tailscale**.
+
+```
+ Enumerator phones (KoboCollect, offline-capable)
+          │  submit when online
+          ▼
+ KoboToolbox cloud (free Community plan) ── stores every submission + photos
+          │ (1) REST Service webhook ──► Tailscale Funnel https://<server>.<tailnet>.ts.net/ingest/kobo   (fast path)
+          │ (2) API poll every 5 min  ◄── ingest worker                                                 (safety net)
+          ▼
+ ┌──────────────────────── home server (docker compose) ─────────────────────────┐
+ │ ingest worker (Python + APScheduler)                                          │
+ │   kobo poller/webhook → raw.kobo_submissions (JSON as received, never edited) │
+ │   validate + QC scoring → core.price_observations (quality flags)             │
+ │   external jobs: WFP/HDX weekly, CHIRPS weekly                                │
+ │ Postgres 17 + TimescaleDB  (raw → core → serving: caggs, derived_metrics)     │
+ │ FastAPI (REST + SSE)  ── public pages + API via Tailscale Funnel              │
+ │ Metabase (internal QC + analysis)  ── tailnet only, never on Funnel           │
+ │ pg_cron (metrics), backup job (pg_dump → rclone → cloud bucket)               │
+ │ Ollama (optional)                                                             │
+ └───────────────────────────────────────────────────────────────────────────────┘
+          │ heartbeat pings                         │ nightly encrypted backup
+          ▼                                         ▼
+ Healthchecks.io (free) – alerts if server/jobs stop   Backblaze B2 / Cloudflare R2 free tier
+```
+
+**Why both webhook and polling:** Kobo REST Service delivers within seconds but retries only a few times and has known timeout issues ([forum](https://community.kobotoolbox.org/t/no-retries-for-rest-service-submissions/64448), [forum](https://community.kobotoolbox.org/t/handling-rest-service-failures/24277)) [V — community reports]. The poller asks Kobo for anything submitted since the last seen ID, so outages of the server or home internet lose nothing. Ingest is idempotent on the Kobo submission UUID.
+
+**Layers (simple "medallion"):**
+- `raw` — submissions exactly as received (JSON + photo links). Allows re-processing when rules change.
+- `core` — cleaned observations, reference tables (markets, commodities, units, enumerators), QC flags.
+- `serving` — continuous aggregates, `derived_metrics`, what the API reads.
+
+**Free services used**
+
+| Service | Use | Limit to watch |
+|---|---|---|
+| KoboToolbox Community | forms, offline collection, storage of submissions | **5,000 submissions/month, 1 GB files** ([support](https://support.kobotoolbox.org/account_usage_limits.html), [pricing](https://kobotoolbox.org/pricing)) [V]. Design: one submission per market per session with a repeat group per commodity → ~180/month. Photos: compress, keep few per session; the server copies them out of Kobo and deletes old ones if storage fills. |
+| Tailscale | private admin access (SSH, Metabase, DB) + **Funnel** for public HTTPS on a `ts.net` name, no domain, no port forwarding ([docs](https://tailscale.com/docs/use-cases/application-testing/share-local-dev-server-with-internet)) [V]. Funnel only allows ports 443/8443/10000 and has bandwidth limits [V — third-party]; confirm it is on the free plan [unverified]. | If public traffic grows → domain + Cloudflare Tunnel. |
+| Healthchecks.io | dead-man switch: worker pings every 5 min; email/Telegram if it stops | free tier [J] |
+| Backblaze B2 or Cloudflare R2 | off-site encrypted DB backups | ~10 GB free [J] |
+
+**Not needed now:** Airflow/Dagster (APScheduler is enough for ~5 jobs), dbt (SQL lives in migrations), Kafka, ClickHouse, Grafana.
+
+**Server hygiene:** UPS for server + router; Docker `restart: always`; Postgres port not published (already bound to localhost); admin tools reachable only over the tailnet; test a backup restore monthly.
+
+---
+
+## 0c. Enumerator honesty and data quality
+
+Budget assumption: **50,000 RWF per enumerator per month** (150,000 RWF total for 3) [to confirm]. Suggested split: **40,000 base + up to 10,000 quality bonus**, plus a data bundle, paid by MoMo. The bonus is driven by the score below, so honesty pays.
+
+### Evidence captured automatically with each submission (Kobo form)
+- **GPS** (required) — must fall within ~300 m of the market.
+- **Start/end time and device ID** — submission must be inside the AM/PM window; a whole market done in 3 minutes is suspicious.
+- **Photos** — the form randomly picks **3 commodities per session** that need a photo of the produce with price/scale visible. The enumerator cannot know in advance which ones.
+- **Vendor identifier** for each of the 3 quotes (stall number or vendor first name + section) — makes back-checks possible.
+
+### Automatic checks on the server (per submission)
+| Check | Flags |
+|---|---|
+| Location | GPS outside market geofence or missing |
+| Timing | outside session window, form filled too fast, AM and PM submitted together |
+| Copy-paste | many prices identical to the previous session (real markets move a bit) |
+| Three-vendor spread | 3 quotes identical every time, or spread implausibly wide |
+| Digit preference | too many round numbers (all ending in 00) vs. the enumerator's history |
+| Outliers | price outside plausible range or a jump vs. last session / other 2 markets (robust z-score) |
+| Photo | missing, duplicated (same image hash reused), EXIF time/place mismatch |
+| Cross-market | one market drifts away from the other two and from WFP Kigali prices over weeks |
+
+Flagged rows stay in a **review queue** and are not published until accepted.
+
+### Human verification
+- **Back-checks:** each week, call or visit **2–3 random vendors** from that week's submissions and ask the price; compare.
+- **Unannounced spot check:** once a week the owner (or a trusted person) visits one market at random and collects ~5 commodities at the same time as the enumerator.
+- **Rotation:** swap enumerators between markets every 1–2 months; if a market's price level jumps when the person changes, the old data was biased.
+- **WhatsApp group** for questions and daily reminders; quick feedback when something is flagged.
+
+### Enumerator scorecard (Metabase, monthly)
+Completeness (sessions on time), photo compliance, % submissions flagged, back-check match rate, spot-check match rate → score 0–100 → bonus. Two failed back-checks in a month = warning; repeated fabrication = replace.
 
 ---
 
@@ -169,6 +247,6 @@ Stack: TradingView Lightweight Charts (Apache-2.0, attribution required), EChart
 ## 9. Open questions for the owner
 
 - Confirm the starter commodity list and the exact variety/grade for each.
-- Enumerator pay/incentive and phone + data bundle budget.
-- Domain name for the public site.
+- Confirm 50,000 RWF is per enumerator (not total) and the base/bonus split.
+- Confirm Tailscale Funnel is available on your Tailscale plan.
 - Later: approach MINAGRI / NISR / WFP once the pilot has a few months of clean data.
