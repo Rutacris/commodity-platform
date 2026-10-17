@@ -20,6 +20,8 @@ Evidence labels: **[V]** confirmed by a source during research, **[J]** judgemen
 
 Volume: 3 markets × ~25 commodities × 2 quotes × ~13 visits/month ≈ 2,000 prices/month (~24k/year).
 
+> **Provisional:** the routine design below (3 days/week, 2 vendors, AM only) is the starting hypothesis. It is confirmed or changed by the 3-week pilot defined in [`PILOT_METHODOLOGY.md`](PILOT_METHODOLOGY.md), which also holds the spec sheets, series rules, QC thresholds, validation plan and pass/fail criteria.
+
 ### Collection protocol — kept light on purpose [J]
 Principle: 50,000 RWF/month buys a **short, simple routine**. The enumerator collects; the **system and the owner do the checking**. Target: **≤ 45 minutes per visit**.
 - Days: **Monday, Wednesday, Friday**, same days in all 3 markets (so markets are comparable). Window **08:00–11:00**. A missed day can be made up the next day, flagged as such. Last-Saturday Umuganda is not a collection day anyway.
