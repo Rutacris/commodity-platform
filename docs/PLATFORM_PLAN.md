@@ -16,14 +16,19 @@ Evidence labels: **[V]** confirmed by a source during research, **[J]** judgemen
 | Institutions | None yet; public sources (WFP/HDX, CHIRPS) used without agreements |
 | Hosting | **One self-hosted server at the owner's premises** |
 
-Volume: 3 markets × ~25 commodities × 2 sessions ≈ 150 prices/day (~55k/year).
+| Frequency | **3 collection days per week, one morning visit** (not daily, not twice a day) |
 
-### Collection protocol [J]
-- Sessions: **AM 08:00–10:00**, **PM 15:00–17:00** (Kigali time); submit before the window closes.
-- For each commodity ask **3 different vendors**, record all 3; the platform publishes the median.
-- Same variety/grade every time (defined in the commodity list); weigh with a scale where the unit is a local measure, or record the local unit and let the platform convert.
-- Optional questions per commodity: availability (1–5) and "where did this come from?" (district) — the cheap start of flow tracing.
-- Shared WhatsApp group for enumerators + weekly spot check by the owner at one market.
+Volume: 3 markets × ~25 commodities × 2 quotes × ~13 visits/month ≈ 2,000 prices/month (~24k/year).
+
+### Collection protocol — kept light on purpose [J]
+Principle: 50,000 RWF/month buys a **short, simple routine**. The enumerator collects; the **system and the owner do the checking**. Target: **≤ 45 minutes per visit**.
+- Days: **Monday, Wednesday, Friday**, same days in all 3 markets (so markets are comparable). Window **08:00–11:00**. A missed day can be made up the next day, flagged as such. Last-Saturday Umuganda is not a collection day anyway.
+- **2 vendors per commodity** (not 3); the platform publishes the average/median of the two.
+- Same variety/grade every time; record price in the vendor's unit (kg, basin, heap…) and the platform converts. No mandatory weighing.
+- One optional question, only for the ~8 staples: "where did this come from?" (district). Availability score dropped for now.
+- If a commodity is not in the market that day: one tap "not available" (useful data in itself).
+- Afternoon prices: only added later, if the data shows big morning/afternoon differences for perishables (e.g. tomatoes).
+- Effect on the platform: charts are **3 points per week**; % change compares with the previous visit and with the same day last week; anomaly checks run weekly. Real-time updates still apply when a visit lands, but are less critical.
 
 ### Starter commodity list (≈25, to be confirmed) [J]
 Cereals and flours: maize grain, maize flour (kawunga), rice local, rice imported, sorghum, wheat flour, cassava flour.
@@ -74,7 +79,7 @@ No domain for now. Everything runs in Docker Compose on one internet-connected s
 
 | Service | Use | Limit to watch |
 |---|---|---|
-| KoboToolbox Community | forms, offline collection, storage of submissions | **5,000 submissions/month, 1 GB files** ([support](https://support.kobotoolbox.org/account_usage_limits.html), [pricing](https://kobotoolbox.org/pricing)) [V]. Design: one submission per market per session with a repeat group per commodity → ~180/month. Photos: compress, keep few per session; the server copies them out of Kobo and deletes old ones if storage fills. |
+| KoboToolbox Community | forms, offline collection, storage of submissions | **5,000 submissions/month, 1 GB files** ([support](https://support.kobotoolbox.org/account_usage_limits.html), [pricing](https://kobotoolbox.org/pricing)) [V]. Design: one submission per market per session with a repeat group per commodity → ~40/month. Photos: compress, keep few per session; the server copies them out of Kobo and deletes old ones if storage fills. |
 | Tailscale | private admin access (SSH, Metabase, DB) + **Funnel** for public HTTPS on a `ts.net` name, no domain, no port forwarding ([docs](https://tailscale.com/docs/use-cases/application-testing/share-local-dev-server-with-internet)) [V]. Funnel only allows ports 443/8443/10000 and has bandwidth limits [V — third-party]; confirm it is on the free plan [unverified]. | If public traffic grows → domain + Cloudflare Tunnel. |
 | Healthchecks.io | dead-man switch: worker pings every 5 min; email/Telegram if it stops | free tier [J] |
 | Backblaze B2 or Cloudflare R2 | off-site encrypted DB backups | ~10 GB free [J] |
@@ -87,21 +92,23 @@ No domain for now. Everything runs in Docker Compose on one internet-connected s
 
 ## 0c. Enumerator honesty and data quality
 
-Budget assumption: **50,000 RWF per enumerator per month** (150,000 RWF total for 3) [to confirm]. Suggested split: **40,000 base + up to 10,000 quality bonus**, plus a data bundle, paid by MoMo. The bonus is driven by the score below, so honesty pays.
+Budget assumption: **50,000 RWF per enumerator per month** (150,000 RWF total for 3) [to confirm] for ~13 visits ≈ 3,800 RWF per visit. Suggested split: **45,000 base + up to 5,000 bonus**, plus a small data bundle, paid by MoMo. Keep demands low; most fraud detection happens in software, invisibly to the enumerator.
 
 ### Evidence captured automatically with each submission (Kobo form)
 - **GPS** (required) — must fall within ~300 m of the market.
 - **Start/end time and device ID** — submission must be inside the AM/PM window; a whole market done in 3 minutes is suspicious.
-- **Photos** — the form randomly picks **3 commodities per session** that need a photo of the produce with price/scale visible. The enumerator cannot know in advance which ones.
-- **Vendor identifier** for each of the 3 quotes (stall number or vendor first name + section) — makes back-checks possible.
+- **One photo per visit** of a commodity picked at random by the form (the enumerator cannot know which one in advance).
+- **Vendor identifier optional**: stall number or section, only for the 2 quotes of the randomly-picked commodity — enough to make back-checks possible without extra work on every item.
+
+GPS, timestamps and device ID are recorded by the phone automatically — **no extra effort** for the enumerator.
 
 ### Automatic checks on the server (per submission)
 | Check | Flags |
 |---|---|
 | Location | GPS outside market geofence or missing |
-| Timing | outside session window, form filled too fast, AM and PM submitted together |
+| Timing | outside session window, form filled too fast, visit outside 08:00–11:00 on a collection day |
 | Copy-paste | many prices identical to the previous session (real markets move a bit) |
-| Three-vendor spread | 3 quotes identical every time, or spread implausibly wide |
+| Two-vendor spread | 2 quotes always identical, or implausibly far apart |
 | Digit preference | too many round numbers (all ending in 00) vs. the enumerator's history |
 | Outliers | price outside plausible range or a jump vs. last session / other 2 markets (robust z-score) |
 | Photo | missing, duplicated (same image hash reused), EXIF time/place mismatch |
@@ -110,13 +117,13 @@ Budget assumption: **50,000 RWF per enumerator per month** (150,000 RWF total fo
 Flagged rows stay in a **review queue** and are not published until accepted.
 
 ### Human verification
-- **Back-checks:** each week, call or visit **2–3 random vendors** from that week's submissions and ask the price; compare.
-- **Unannounced spot check:** once a week the owner (or a trusted person) visits one market at random and collects ~5 commodities at the same time as the enumerator.
-- **Rotation:** swap enumerators between markets every 1–2 months; if a market's price level jumps when the person changes, the old data was biased.
+- **Back-checks:** each week, call or visit **2 random vendors** from that week's submissions and ask the price; compare.
+- **Unannounced spot check:** every 2 weeks the owner (or a trusted person) visits one market at random on a collection day and checks ~5 commodities.
+- **Rotation:** swap enumerators between markets every 2–3 months; if a market's price level jumps when the person changes, the old data was biased.
 - **WhatsApp group** for questions and daily reminders; quick feedback when something is flagged.
 
 ### Enumerator scorecard (Metabase, monthly)
-Completeness (sessions on time), photo compliance, % submissions flagged, back-check match rate, spot-check match rate → score 0–100 → bonus. Two failed back-checks in a month = warning; repeated fabrication = replace.
+Completeness (visits on time), photo compliance, % submissions flagged, back-check match rate, spot-check match rate → score 0–100 → bonus. Two failed back-checks in a month = warning; repeated fabrication = replace.
 
 ---
 
@@ -137,7 +144,7 @@ Upgrade later only if: >~1B rows or slow multi-analyst ad-hoc queries (ClickHous
 
 ## 2. Gaps in the current repo
 
-- `prices` has a `date` only and `UNIQUE(commodity, market, date, source)` → **cannot store AM and PM readings**.
+- `prices` has a `date` only and `UNIQUE(commodity, market, date, source)` → **cannot store two readings (vendors/sessions) for the same day**.
 - Commodity and market are free text → no geography, no flows, spelling duplicates.
 - No price type (retail / wholesale / farm-gate), unit normalization, availability, origin, enumerator, quality flag.
 - No migrations tool (add Alembic).
