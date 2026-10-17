@@ -16,3 +16,11 @@ __pycache__/
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# demo / test data (generated deterministically)
+demo/data/
+tests/.synth/
+.pytest_cache/
+!db/
+db/*
+!db/migrations/

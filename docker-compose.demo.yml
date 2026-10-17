@@ -1,0 +1,81 @@
+# End-to-end demo with synthetic data. Everything is real code except the data and the Kobo server.
+#   docker compose -f docker-compose.demo.yml up --build
+#   open http://localhost:8080
+# Reset: docker compose -f docker-compose.demo.yml down -v
+
+x-app: &app
+  build: { context: ., dockerfile: Dockerfile.pipeline }
+  image: commodity-pipeline:demo
+  environment: &env
+    DATABASE_URL: postgresql://demo:demo@db:5432/commodities_demo
+    KOBO_URL: http://mock-kobo:8001
+    KOBO_TOKEN: demo-token
+    KOBO_ASSET_UID: aDemoPriceForm
+    WEBHOOK_SECRET: demo-webhook-secret
+    POLL_SECONDS: "30"
+    SYNTH_DIR: /synth
+    SYNTH_DATA: /synth/submissions.jsonl
+    DEMO: "1"
+  volumes:
+    - synth:/synth
+
+services:
+  db:
+    image: timescale/timescaledb:2.30.2-pg17
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: commodities_demo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d commodities_demo"]
+      interval: 5s
+      retries: 20
+
+  # One-shot: migrations, synthetic world, vendor panel, external series, truth tables.
+  seed:
+    <<: *app
+    command: ["python", "-m", "demo.seed"]
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  # Stand-in for KoboToolbox: serves the Kobo data API and sends webhooks.
+  # LIVE_SECONDS: one simulated collection day every N seconds (0 = advance manually).
+  mock-kobo:
+    <<: *app
+    command: ["uvicorn", "demo.mock_kobo.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      <<: *env
+      WEBHOOK_URL: http://api:8000/ingest/kobo
+      WEBHOOK_HEADER_SECRET: demo-webhook-secret
+      SIM_START: "2026-10-16"
+      LIVE_SECONDS: "120"
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      seed: { condition: service_completed_successfully }
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "pipeline.worker"]
+    depends_on:
+      seed: { condition: service_completed_successfully }
+      mock-kobo: { condition: service_started }
+    restart: always
+
+  api:
+    <<: *app
+    command: ["uvicorn", "pipeline.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8080:8000"
+    depends_on:
+      seed: { condition: service_completed_successfully }
+    restart: always
+
+volumes:
+  pgdata:
+  synth:

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kigali Price Monitor</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f4f3f0; --surface-1: #fcfcfb; --border: #e2e1dc;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974;
+  --grid: #ecebe7; --axis: #b9b8b2;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-ref: #52514e;
+  --warning: #fab219; --critical: #d03b3b; --good: #0ca30c;
+  --accent: #2a78d6; --banner: #fff4d6; --banner-text: #5c4300;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #121211; --surface-1: #1a1a19; --border: #2d2d2b;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+    --grid: #262624; --axis: #4a4a46;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-ref: #c3c2b7;
+    --accent: #3987e5; --banner: #3a2f10; --banner-text: #f5d98a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211; --surface-1: #1a1a19; --border: #2d2d2b;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+  --grid: #262624; --axis: #4a4a46;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-ref: #c3c2b7;
+  --accent: #3987e5; --banner: #3a2f10; --banner-text: #f5d98a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { padding: 12px 16px; background: var(--surface-1); border-bottom: 1px solid var(--border);
+         display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header h1 { font-size: 18px; margin: 0; }
+.banner { background: var(--banner); color: var(--banner-text); padding: 6px 16px; font-size: 13px; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.dot.on { background: var(--good); }
+.muted { color: var(--text-muted); }
+.secondary { color: var(--text-secondary); }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+.card h2 { font-size: 15px; margin: 0 0 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .l { color: var(--text-secondary); font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+th { color: var(--text-secondary); font-weight: 500; font-size: 12px; }
+td.num, th.num { text-align: right; }
+tr.click { cursor: pointer; }
+tr.click:hover, tr.sel { background: var(--grid); }
+.scroll { overflow-x: auto; }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 1px 8px; border-radius: 999px;
+         border: 1px solid var(--border); color: var(--text-primary); white-space: nowrap; }
+.badge .ic { font-weight: 700; }
+.badge.watch .ic { color: var(--warning); }
+.badge.unusual .ic { color: var(--critical); }
+.chg { white-space: nowrap; }
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+       border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12);
+       white-space: nowrap; display: none; z-index: 2; }
+.tip .sw { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.legend span::before { content: ""; display: inline-block; width: 14px; height: 2px; background: var(--c);
+                       vertical-align: middle; margin-right: 6px; }
+.legend span.dash::before { background: repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 7px); }
+button { font: inherit; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+         background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.flags { font-size: 12px; color: var(--text-secondary); }
+ul.movers { list-style: none; margin: 0; padding: 0; }
+ul.movers li { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--grid); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="banner" id="banner">SYNTHETIC DATA — demo of the full pipeline. Prices are generated, not real market prices.</div>
+<header>
+  <h1>Kigali Price Monitor</h1>
+  <span class="secondary">Nyabugogo · Kimironko · Kabuga — retail</span>
+  <span class="live"><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span>
+  <span class="muted" id="asof"></span>
+</header>
+<main>
+  <section class="tiles" id="tiles"></section>
+
+  <section class="grid2">
+    <div class="card"><h2>Biggest rises, last 4 weeks</h2><ul class="movers" id="up"></ul></div>
+    <div class="card"><h2>Biggest falls, last 4 weeks</h2><ul class="movers" id="down"></ul></div>
+  </section>
+
+  <section class="card">
+    <h2>All commodities <span class="muted" id="weeklbl"></span></h2>
+    <div class="scroll"><table id="watch"><thead><tr>
+      <th>Commodity</th><th class="num">Price (RWF)</th><th class="num">1 week</th><th class="num">4 weeks</th>
+      <th>Last 26 weeks</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+    <p class="muted" style="margin:8px 0 0;font-size:12px">National price = geometric mean of the three markets.
+      Status compares this week with the trend and seasonal pattern of earlier weeks (provisional thresholds).</p>
+  </section>
+
+  <section class="card" id="detail" hidden>
+    <h2 id="dtitle"></h2>
+    <div class="legend" id="dlegend"></div>
+    <div class="chart" id="dchart"></div>
+    <div class="grid2" style="margin-top:16px">
+      <div>
+        <h2>Where it is cheapest this week</h2>
+        <table id="dmarkets"><thead><tr><th>Market</th><th class="num">Price</th><th class="num">1 week</th>
+          <th>Last visit</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <h2>Compared with diesel (index, first week = 100)</h2>
+        <div class="legend" id="clegend"></div>
+        <div class="chart" id="cchart"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Enumerator scorecard (last 8 weeks)</h2>
+      <div class="scroll"><table id="score"><thead><tr><th>Enumerator</th><th>Market</th><th class="num">Visits</th>
+        <th class="num">Held</th><th class="num">Flagged</th><th>Main reasons</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Review queue <span class="muted" id="qcount"></span></h2>
+      <div class="scroll" style="max-height:340px;overflow-y:auto"><table id="queue"><thead><tr><th>Visit</th><th>Why</th><th></th>
+        </tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="card" id="truthcard">
+    <h2>Truth check (demo only)</h2>
+    <p class="secondary" style="margin-top:0">Compares what the platform published with the hidden truth the generator recorded.</p>
+    <button id="truthbtn">Run truth check</button>
+    <div id="truth" style="margin-top:12px"></div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => n == null ? "–" : Math.round(n).toLocaleString("en-US");
+const pct = n => n == null ? "–" : `${n > 0 ? "▲ +" : n < 0 ? "▼ −" : ""}${Math.abs(n).toFixed(1)}%`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const MARKET = {NYB: ["Nyabugogo", "--series-1"], KIM: ["Kimironko", "--series-2"], KAB: ["Kabuga", "--series-3"]};
+const RULES = {outside_market: "GPS outside market", too_fast: "filled too fast", photo_reused: "photo reused",
+  copied_prices: "copied last prices", round_numbers: "many round numbers", price_outlier: "price outlier",
+  outside_window: "outside time window", off_schedule: "not a collection day", identical_vendors: "identical quotes",
+  photo_missing: "no photo", gps_missing: "no GPS", unknown_vendor: "unknown vendor"};
+let selected = null;
+
+function badge(a) {
+  if (a === "unusual") return '<span class="badge unusual"><span class="ic">!!</span>Unusual</span>';
+  if (a === "watch") return '<span class="badge watch"><span class="ic">!</span>Watch</span>';
+  if (a === "normal") return '<span class="muted">Normal</span>';
+  return '<span class="muted">Not enough history</span>';
+}
+
+function spark(vals) {
+  if (!vals || vals.length < 2) return "";
+  const w = 110, h = 26, lo = Math.min(...vals), hi = Math.max(...vals), r = hi - lo || 1;
+  const pts = vals.map((v, i) => [i / (vals.length - 1) * (w - 4) + 2, h - 3 - (v - lo) / r * (h - 6)]);
+  const last = pts[pts.length - 1];
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+    <polyline fill="none" stroke="${css("--text-secondary")}" stroke-width="1.5" points="${pts.map(p => p.join(",")).join(" ")}"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.5" fill="${css("--text-primary")}"/></svg>`;
+}
+
+function niceTicks(lo, hi, n = 4) {
+  const span = hi - lo || 1, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= step0);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+
+// Line chart: one y axis, thin 2px lines, legend outside, direct labels at the right end, crosshair tooltip.
+function lineChart(el, series, {yFmt = fmt, height = 260, gapDays = 10} = {}) {
+  el.innerHTML = "";
+  const W = Math.max(el.clientWidth, 300), H = height, m = {l: 52, r: 86, t: 10, b: 26};
+  const all = series.flatMap(s => s.points);
+  if (!all.length) { el.innerHTML = '<p class="muted">No published data in this period.</p>'; return; }
+  const xs = all.map(p => +p.x), ys = all.map(p => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys); const pad = (y1 - y0) * 0.08 || 1; y0 -= pad; y1 += pad;
+  const X = v => m.l + (v - x0) / (x1 - x0 || 1) * (W - m.l - m.r);
+  const Y = v => m.t + (1 - (v - y0) / (y1 - y0)) * (H - m.t - m.b);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  for (const t of niceTicks(y0, y1)) {
+    svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(t)}" y2="${Y(t)}" stroke="${css("--grid")}"/>
+      <text x="${m.l - 6}" y="${Y(t) + 4}" text-anchor="end" font-size="11" fill="${css("--text-muted")}">${yFmt(t)}</text>`;
+  }
+  const months = [], d = new Date(x0); d.setDate(1); d.setMonth(d.getMonth() + 1);
+  const stepM = (x1 - x0) / 864e5 > 200 ? 2 : 1;
+  for (; +d <= x1; d.setMonth(d.getMonth() + stepM)) months.push(new Date(d));
+  for (const mo of months) svg += `<text x="${X(+mo)}" y="${H - 6}" text-anchor="middle" font-size="11"
+      fill="${css("--text-muted")}">${mo.toLocaleString("en", {month: "short"})}${mo.getMonth() === 0 ? " " + mo.getFullYear() : ""}</text>`;
+  svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}" stroke="${css("--axis")}"/>`;
+  const ends = [];
+  for (const s of series) {
+    if (!s.points.length) continue;
+    // Break the line where no accepted data exists for more than `gapDays` (e.g. visits held for review).
+    let seg = [];
+    const flush = () => {
+      if (seg.length > 1) svg += `<polyline fill="none" stroke="${css(s.color)}" stroke-width="2" stroke-linejoin="round"
+        ${s.dash ? 'stroke-dasharray="5 4"' : ""} points="${seg.join(" ")}"/>`;
+      else if (seg.length === 1) { const [cx, cy] = seg[0].split(","); svg += `<circle cx="${cx}" cy="${cy}" r="2" fill="${css(s.color)}"/>`; }
+      seg = [];
+    };
+    s.points.forEach((p, i) => {
+      if (i && (+p.x - +s.points[i - 1].x) > gapDays * 864e5) flush();
+      seg.push(`${X(+p.x).toFixed(1)},${Y(p.y).toFixed(1)}`);
+    });
+    flush();
+    const last = s.points[s.points.length - 1];
+    ends.push({y: Y(last.y), name: s.name, x: X(+last.x)});
+  }
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 13) ends[i].y = ends[i - 1].y + 13;
+  for (const e of ends) svg += `<text x="${W - m.r + 6}" y="${e.y + 4}" font-size="11" fill="${css("--text-secondary")}">${esc(e.name)}</text>`;
+  svg += `<line id="xh" y1="${m.t}" y2="${H - m.b}" stroke="${css("--axis")}" visibility="hidden"/>
+    <rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent" id="hit"/></svg>`;
+  el.innerHTML = svg + '<div class="tip"></div>';
+  const tip = el.querySelector(".tip"), xh = el.querySelector("#xh"), hit = el.querySelector("#hit");
+  const svgEl = el.querySelector("svg");
+  const move = ev => {
+    const r = svgEl.getBoundingClientRect(), px = (ev.clientX - r.left) * W / r.width;
+    const t = x0 + (px - m.l) / (W - m.l - m.r) * (x1 - x0);
+    let rows = "", best = null;
+    for (const s of series) {
+      if (!s.points.length) continue;
+      const p = s.points.reduce((a, b) => Math.abs(+b.x - t) < Math.abs(+a.x - t) ? b : a);
+      if (Math.abs(+p.x - t) > 5 * 864e5) continue;
+      best = best || p;
+      rows += `<div><span class="sw" style="background:${css(s.color)}"></span>${esc(s.name)}: <b>${yFmt(p.y)}</b></div>`;
+    }
+    if (!best) { tip.style.display = "none"; xh.setAttribute("visibility", "hidden"); return; }
+    xh.setAttribute("x1", X(+best.x)); xh.setAttribute("x2", X(+best.x)); xh.setAttribute("visibility", "visible");
+    tip.innerHTML = `<div class="muted">${best.x.toLocaleDateString("en-GB", {day: "numeric", month: "short", year: "numeric"})}</div>${rows}`;
+    tip.style.display = "block";
+    const left = (X(+best.x) / W) * r.width;
+    tip.style.left = `${Math.min(left + 12, r.width - tip.offsetWidth - 4)}px`;
+    tip.style.top = "8px";
+  };
+  hit.addEventListener("mousemove", move);
+  hit.addEventListener("mouseleave", () => { tip.style.display = "none"; xh.setAttribute("visibility", "hidden"); });
+}
+
+function legend(el, series) {
+  el.innerHTML = series.map(s => `<span class="${s.dash ? "dash" : ""}" style="--c:${css(s.color)}">${esc(s.name)}</span>`).join("");
+}
+
+async function loadOverview() {
+  const o = await (await fetch("/api/overview")).json();
+  if (!o.demo) $("#banner").hidden = $("#truthcard").hidden = true;
+  if (!o.week) { $("#asof").textContent = "No data yet"; return; }
+  const st = o.status;
+  $("#asof").textContent = `Last market visit ${st.last_visit} · received ${new Date(st.last_received).toLocaleTimeString()}`;
+  $("#weeklbl").textContent = `— week of ${o.week}`;
+  const ext = Object.fromEntries(o.external.map(e => [e.code, e]));
+  const tile = (v, l) => `<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  $("#tiles").innerHTML =
+    tile(st.visits.toLocaleString(), "market visits processed") +
+    tile(st.held, "visits held for review") +
+    (ext.DIESEL ? tile(fmt(ext.DIESEL.value), `diesel RWF/L · ${pct((ext.DIESEL.value / ext.DIESEL.prev - 1) * 100)} vs prior month`) : "") +
+    (ext.USDRWF ? tile(ext.USDRWF.value.toFixed(0), `RWF per USD (${ext.USDRWF.ts})`) : "");
+  const li = r => `<li><span>${esc(r.name_en)} <span class="muted">${esc(r.name_rw)}</span></span>
+      <span class="chg">${pct(r.pct_4w)}</span></li>`;
+  $("#up").innerHTML = o.movers.up.map(li).join("");
+  $("#down").innerHTML = o.movers.down.map(li).join("");
+  $("#watch tbody").innerHTML = o.rows.map(r => `<tr class="click ${r.code === selected ? "sel" : ""}" data-code="${r.code}">
+      <td>${esc(r.name_en)}<br><span class="muted" style="font-size:12px">${esc(r.name_rw)} · ${esc(r.name_fr)}</span></td>
+      <td class="num">${fmt(r.price)} <span class="muted">/${esc(r.std_unit)}</span></td>
+      <td class="num chg">${pct(r.pct_wow)}</td><td class="num chg">${pct(r.pct_4w)}</td>
+      <td>${spark(r.spark)}</td><td>${badge(r.anomaly)}</td></tr>`).join("");
+  document.querySelectorAll("#watch tr.click").forEach(tr => tr.onclick = () => { selected = tr.dataset.code; loadDetail(); loadOverview(); });
+  if (!selected) { selected = (o.rows.find(r => r.anomaly === "unusual") || o.rows[0]).code; loadDetail(); }
+}
+
+async function loadDetail() {
+  if (!selected) return;
+  const d = await (await fetch(`/api/commodity/${selected}`)).json();
+  const c = d.commodity;
+  $("#detail").hidden = false;
+  $("#dtitle").innerHTML = `${esc(c.name_en)} <span class="muted">${esc(c.name_rw)} · RWF per ${esc(c.std_unit)}, last 12 months</span>`;
+  const series = Object.entries(MARKET).map(([code, [name, color]]) => ({
+    name, color, points: d.daily.filter(r => r.market === code).map(r => ({x: new Date(r.day), y: +r.price}))}));
+  series.push({name: "National (weekly)", color: "--series-ref", dash: true,
+    points: d.weekly.filter(r => r.market === "ALL").map(r => ({x: new Date(r.week), y: +r.price}))});
+  legend($("#dlegend"), series);
+  lineChart($("#dchart"), series);
+  const avail = Object.fromEntries(d.availability.map(a => [a.market, a]));
+  $("#dmarkets tbody").innerHTML = d.markets.map((r, i) => `<tr><td>${esc(r.name)}${i === 0 && !r.stale ? ' <span class="badge">cheapest</span>' : ""}</td>
+      <td class="num">${r.stale ? `<span class="muted">no accepted price since ${r.week}</span>` : fmt(r.price)}</td>
+      <td class="num chg">${r.stale ? "–" : pct(r.pct_wow)}</td>
+      <td>${avail[r.market] ? (avail[r.market].available ? avail[r.market].visit_date : `<b>not available</b> ${avail[r.market].visit_date}`) : "–"}</td></tr>`).join("");
+  const nat = d.weekly.filter(r => r.market === "ALL");
+  if (nat.length && d.diesel.length) {
+    const b0 = +nat[0].price, d0 = +d.diesel[0].value;
+    const cmp = [
+      {name: c.name_en, color: "--series-1", points: nat.map(r => ({x: new Date(r.week), y: r.price / b0 * 100}))},
+      {name: "Diesel", color: "--series-ref", dash: true, points: d.diesel.map(r => ({x: new Date(r.week), y: r.value / d0 * 100}))}];
+    legend($("#clegend"), cmp);
+    lineChart($("#cchart"), cmp, {yFmt: v => v.toFixed(0), height: 200, gapDays: 45});
+  }
+}
+
+async function loadQC() {
+  const [score, queue] = await Promise.all([(await fetch("/api/qc/scorecard")).json(), (await fetch("/api/qc/queue")).json()]);
+  $("#score tbody").innerHTML = score.map(s => {
+    const top = Object.entries(s.rules || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, n]) => `${RULES[k] || k} (${n})`).join(", ");
+    return `<tr><td>${esc(s.enumerator)}</td><td>${MARKET[s.market][0]}</td><td class="num">${s.visits}</td>
+      <td class="num">${s.pct_held ?? 0}%</td><td class="num">${s.pct_flagged ?? 0}%</td><td class="flags">${esc(top || "—")}</td></tr>`;
+  }).join("");
+  $("#qcount").textContent = `(${queue.length} shown)`;
+  $("#queue tbody").innerHTML = queue.map(v => `<tr><td>${v.visit_date}<br><span class="muted">${MARKET[v.market][0]} · ${v.enumerator}</span></td>
+      <td class="flags">${[...new Set(v.flags.filter(f => f.severity === "hold").map(f => RULES[f.rule] || f.rule))].join(", ")}</td>
+      <td style="white-space:nowrap"><button data-id="${v.id}" data-a="accept"
+        title="${v.flags.some(f => f.rule === "price_outlier") ? "Publish the visit; flagged outlier prices stay out" : "Publish the visit"}">Accept</button>
+        ${v.flags.some(f => f.rule === "price_outlier") ? `<button data-id="${v.id}" data-a="accept_all" title="Publish everything, including flagged outliers">Accept all</button>` : ""}
+        <button data-id="${v.id}" data-a="reject">Reject</button></td></tr>`).join("");
+  document.querySelectorAll("#queue button").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    await fetch(`/api/qc/visits/${b.dataset.id}/${b.dataset.a}`, {method: "POST"});
+    loadQC();
+  });
+}
+
+$("#truthbtn").onclick = async () => {
+  $("#truth").innerHTML = '<p class="muted">Running…</p>';
+  const t = await (await fetch("/api/truth")).json();
+  const ok = b => b ? "✔ pass" : "✘ fail";
+  $("#truth").innerHTML = `<div class="kv">
+    <span>Misconduct caught</span><b>${(t.qc.misconduct_recall * 100).toFixed(0)}% — ${Object.entries(t.qc.by_kind).map(([k, v]) => `${k} ${v.held}/${v.visits}`).join(", ")} (${ok(t.qc.pass)})</b>
+    <span>Typos caught</span><b>${t.qc.typos_caught}/${t.qc.typos}, false outlier holds ${t.qc.false_outlier_holds}</b>
+    ${t.events.map(e => `<span>${esc(e.event)}</span><b>${e.detected ? "✔" : "✘"} ${esc(e.evidence)}</b>`).join("")}
+    <span>Weekly change vs truth</span><b>correlation ${t.tracking.corr_weekly_change}, median level error ${t.tracking.median_abs_level_error_pct}%</b>
+    <span>Fuel pass-through</span><b>${t.fuel_summary.within_50pct}/${t.fuel_summary.fuel_sensitive} fuel-sensitive goods within ±50% (${ok(t.fuel_summary.pass)})</b>
+    <span>Pilot: vendor sd</span><b>${t.pilot.median_vendor_sd} (true ${t.pilot.true_vendor_sd})</b>
+    <span>Pilot: afternoon effect</span><b>${t.pilot.pm_effect_perishables} (true ${t.pilot.true_pm_effect})</b>
+    <span>Thinning: weekly level RMSE</span><b>${Object.entries(t.pilot.thinning.rmse_weekly_level_pct).map(([k, v]) => `${k.replaceAll("_", " ")} ${v}%`).join(" · ")}</b></div>`;
+};
+
+function connect() {
+  const es = new EventSource("/api/stream");
+  es.onopen = () => { $("#livedot").classList.add("on"); $("#livetxt").textContent = "live"; };
+  es.onerror = () => { $("#livedot").classList.remove("on"); $("#livetxt").textContent = "reconnecting…"; };
+  let t;
+  es.onmessage = () => { clearTimeout(t); t = setTimeout(() => { loadOverview(); loadDetail(); loadQC(); }, 400); };
+}
+
+loadOverview(); loadQC(); connect();
+window.addEventListener("resize", () => loadDetail());
+</script>
+</body>
+</html>

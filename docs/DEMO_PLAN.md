@@ -1,5 +1,9 @@
 # End-to-End Demo with Synthetic Data — Plan
 
+> **Status:** the 2-week version is built — see [`demo/README.md`](../demo/README.md) for how to run it and the results.
+> Differences from this plan: no Metabase yet (review queue and scorecard are in the dashboard), no MinIO backup drill,
+> photos are represented by a hash, and the stack runs on TimescaleDB's own scheduler/real-time aggregates rather than pg_cron.
+
 Goal: run the **whole architecture** from `PLATFORM_PLAN.md` on one machine, with no real enumerators, no real Kobo account and no internet dependency, and show that every stage works: collection → ingest → QC → storage → analytics → live UI → resilience.
 
 Principle: **only the data is fake.** The ingest worker, database, QC rules, analytics jobs, API and frontend are the real code, unchanged. A mock Kobo server stands in for KoboToolbox, so switching to production means changing one URL and one token.
