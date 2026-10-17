@@ -6,6 +6,42 @@ Evidence labels: **[V]** confirmed by a source during research, **[J]** judgemen
 
 ---
 
+## 0. Pilot scope (decided)
+
+| Item | Decision |
+|---|---|
+| Markets | **Nyabugogo, Kimironko, Kabuga** (Kigali) |
+| Price type | **Retail only** (schema keeps `price_type` so wholesale can be added later) |
+| Collectors | **1 enumerator per market** (3 total), recruited via market committee or cooperative |
+| Institutions | None yet; public sources (WFP/HDX, CHIRPS) used without agreements |
+| Hosting | **One self-hosted server at the owner's premises** |
+
+Volume: 3 markets × ~25 commodities × 2 sessions ≈ 150 prices/day (~55k/year).
+
+### Collection protocol [J]
+- Sessions: **AM 08:00–10:00**, **PM 15:00–17:00** (Kigali time); submit before the window closes.
+- For each commodity ask **3 different vendors**, record all 3; the platform publishes the median.
+- Same variety/grade every time (defined in the commodity list); weigh with a scale where the unit is a local measure, or record the local unit and let the platform convert.
+- Optional questions per commodity: availability (1–5) and "where did this come from?" (district) — the cheap start of flow tracing.
+- Shared WhatsApp group for enumerators + weekly spot check by the owner at one market.
+
+### Starter commodity list (≈25, to be confirmed) [J]
+Cereals and flours: maize grain, maize flour (kawunga), rice local, rice imported, sorghum, wheat flour, cassava flour.
+Pulses and nuts: dry beans (mixed), dry beans (yellow/"kinyobwa"), peas, groundnuts.
+Roots, tubers, bananas: Irish potatoes, sweet potatoes, fresh cassava, cooking bananas.
+Vegetables: tomatoes, onions, cabbage, carrots.
+Animal products: eggs (tray), fresh milk (litre), beef, fish (tilapia).
+Other: cooking oil (litre), sugar, salt, charcoal (sack).
+
+### Implications of the home server [J]
+- **Phones never talk to the home server directly.** Enumerators submit to **KoboToolbox's hosted server** (works offline, stores submissions even if the home server or home internet is down). The platform **pulls** new submissions from the Kobo API every few minutes → no inbound webhook, no lost data during outages. Confirm Kobo free-plan limits (one submission per market per session with a repeat group = ~180 submissions/month).
+- Publish the site through **Cloudflare Tunnel** (or similar) instead of opening router ports; no static IP needed, TLS handled.
+- **UPS** for the server and router; Docker `restart: always` (already set).
+- **Backups off-site**: nightly `pg_dump` (or pgBackRest, included in the timescaledb-ha image) encrypted to cloud storage; test a restore monthly.
+- Ollama on the same box: fine at this volume; keep it optional so the platform runs without it.
+
+---
+
 ## 1. Decisions so far
 
 | Topic | Decision | Why |
@@ -112,7 +148,7 @@ Stack: TradingView Lightweight Charts (Apache-2.0, attribution required), EChart
 | Phase | Scope | Outcome |
 |---|---|---|
 | **0 Foundations** | PG17 + TimescaleDB image, Alembic, new schema, reference data (markets with GPS, trilingual commodities, local units), migrate existing rows | Clean base |
-| **1 Collection** | Kobo/ODK form, webhook ingest, validation + review queue, WFP (HDX → Data Bridges), CHIRPS; pilot 5–10 markets | Reliable twice-daily data |
+| **1 Collection** | Kobo form (rw/en), Kobo API poller, validation + review queue, enumerator onboarding at Nyabugogo/Kimironko/Kabuga, WFP (HDX → Data Bridges), CHIRPS | Reliable twice-daily data from 3 markets |
 | **2 Analytics core** | caggs, `pg_cron` metrics, anomaly flags, SSE stream, Superset for internal QA | Live, trustworthy numbers |
 | **3 Public MVP** | Home, commodity, market pages, top movers, map; rw/en/fr PWA | Daily-use product |
 | **4 Drivers & compare** | fuel, FX, CPI, regional prices; compare/correlate; basket | Explains *why* prices move |
@@ -132,8 +168,7 @@ Stack: TradingView Lightweight Charts (Apache-2.0, attribution required), EChart
 
 ## 9. Open questions for the owner
 
-- Pilot markets and commodities (how many, which)?
-- Retail only, or also wholesale and farm-gate?
-- Who are enumerators (own staff, cooperatives, market committees)?
-- Partnership with MINAGRI / NISR / WFP?
-- Hosting: one VPS, or cloud?
+- Confirm the starter commodity list and the exact variety/grade for each.
+- Enumerator pay/incentive and phone + data bundle budget.
+- Domain name for the public site.
+- Later: approach MINAGRI / NISR / WFP once the pilot has a few months of clean data.
