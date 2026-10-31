@@ -65,7 +65,7 @@ def _pilot_window(cur):
     return date.fromisoformat(a), date.fromisoformat(b)
 
 
-def transform(cur, lk, kobo_uuid: str, p: dict, pilot) -> dict:
+def transform(cur, lk, kobo_uuid: str, p: dict, pilot, history: qc.History) -> dict:
     mkt_id, mlat, mlon = lk["markets"][p["market"]]
     started = datetime.fromisoformat(p["start"])
     ended = datetime.fromisoformat(p["end"])
@@ -76,13 +76,6 @@ def transform(cur, lk, kobo_uuid: str, p: dict, pilot) -> dict:
                  visit_date=date.fromisoformat(p["visit_date"]), session=p.get("session", "AM"), started_at=started, ended_at=ended,
                  duration_s=int((ended - started).total_seconds()), lat=lat, lon=lon, dist_m=dist,
                  device_id=p.get("deviceid"), photo_commodity_id=photo_c, photo_hash=p.get("photo_phash"))
-    visit["id"] = cur.execute(
-        """INSERT INTO core.visits (kobo_uuid, market_id, enumerator_id, visit_date, session, started_at, ended_at,
-               duration_s, lat, lon, dist_m, device_id, photo_commodity_id, photo_hash)
-           VALUES (%(kobo_uuid)s, %(market_id)s, %(enumerator_id)s, %(visit_date)s, %(session)s, %(started_at)s, %(ended_at)s,
-               %(duration_s)s, %(lat)s, %(lon)s, %(dist_m)s, %(device_id)s, %(photo_commodity_id)s, %(photo_hash)s)
-           RETURNING id""", visit).fetchone()[0]
-
     quotes, unknown = [], []
     for g in p.get("commodities", []):
         c_id, per_unit = lk["commodities"][g["commodities/commodity"]]
@@ -98,9 +91,17 @@ def transform(cur, lk, kobo_uuid: str, p: dict, pilot) -> dict:
             quotes.append(dict(commodity_id=c_id, vendor_id=v_id, available=True, price_rwf=price,
                                price_std=price / per_unit))
 
+    visit["n_quotes"] = sum(1 for q in quotes if q["vendor_id"])
+    visit["id"] = cur.execute(
+        """INSERT INTO core.visits (kobo_uuid, market_id, enumerator_id, visit_date, session, started_at, ended_at,
+               duration_s, n_quotes, lat, lon, dist_m, device_id, photo_commodity_id, photo_hash)
+           VALUES (%(kobo_uuid)s, %(market_id)s, %(enumerator_id)s, %(visit_date)s, %(session)s, %(started_at)s, %(ended_at)s,
+               %(duration_s)s, %(n_quotes)s, %(lat)s, %(lon)s, %(dist_m)s, %(device_id)s, %(photo_commodity_id)s, %(photo_hash)s)
+           RETURNING id""", visit).fetchone()[0]
+
     visit.update(makeup=p.get("makeup") == "yes",
                  local_start_hour=started.hour + started.minute / 60)
-    result = qc.run(cur, visit, quotes, pilot)
+    result = qc.run(cur, visit, quotes, pilot, history)
     for code in unknown:
         result.flags.append(qc.Flag("unknown_vendor", "flag", {"vendor": code}))
 
@@ -112,14 +113,15 @@ def transform(cur, lk, kobo_uuid: str, p: dict, pilot) -> dict:
             q_status = "held" if status == "held" or (q["commodity_id"], q["vendor_id"]) in held_quotes else "ok"
             cp.write_row((started, visit["id"], mkt_id, q["commodity_id"], q["vendor_id"], q["available"],
                           q["price_rwf"], q["price_std"], q_status))
-    for f in result.flags:
-        cur.execute("INSERT INTO core.qc_flags (visit_id, commodity_id, vendor_id, rule, severity, detail) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (visit["id"], f.commodity_id, f.vendor_id, f.rule, f.severity, Jsonb(f.detail)))
+    if result.flags:
+        cur.executemany("INSERT INTO core.qc_flags (visit_id, commodity_id, vendor_id, rule, severity, detail) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        [(visit["id"], f.commodity_id, f.vendor_id, f.rule, f.severity, Jsonb(f.detail))
+                         for f in result.flags])
     if status == "held":
         cur.execute("UPDATE core.visits SET status = 'held' WHERE id = %s", (visit["id"],))
     return {"visit_id": visit["id"], "market": p["market"], "date": p["visit_date"], "status": status,
-            "flags": [f.rule for f in result.flags]}
+            "flags": [f.rule for f in result.flags], "visit": visit}
 
 
 def process_pending(conn, batch: int = 200) -> list[dict]:
@@ -134,11 +136,13 @@ def process_pending(conn, batch: int = 200) -> list[dict]:
                                "WHERE processed_at IS NULL ORDER BY kobo_id LIMIT %s", (batch,)).fetchall()
             if not rows:
                 break
-            lk, pilot = _lookups(cur), _pilot_window(cur)
+            lk, pilot, history = _lookups(cur), _pilot_window(cur), qc.History(cur)
             for kobo_id, kobo_uuid, payload in rows:
                 try:
                     with conn.transaction():
-                        done.append(transform(cur, lk, kobo_uuid, payload, pilot))
+                        result = transform(cur, lk, kobo_uuid, payload, pilot, history)
+                    history.record(result.pop("visit"))   # only after the savepoint committed
+                    done.append(result)
                     cur.execute("UPDATE raw.kobo_submissions SET processed_at = now(), process_error = NULL "
                                 "WHERE kobo_id = %s", (kobo_id,))
                 except Exception as e:   # keep the raw row; record why it failed so it can be re-run

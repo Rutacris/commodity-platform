@@ -59,7 +59,7 @@ class Processor:
                 with connect() as conn:
                     done = ingest.process_pending(conn)
                 if done:
-                    analytics.recompute()
+                    analytics.recompute(from_date=min(d["date"] for d in done))
                 if not self.again:
                     break
         finally:
@@ -217,8 +217,8 @@ def review(visit_id: int, action: str, tasks: BackgroundTasks):
         raise HTTPException(400, "action must be accept, accept_all or reject")
     status = "rejected" if action == "reject" else "ok"
     with connect() as conn:
-        n = conn.execute("UPDATE core.visits SET status = %s, reviewed_at = now() WHERE id = %s RETURNING id",
-                         (status, visit_id)).fetchone()
+        n = conn.execute("UPDATE core.visits SET status = %s, reviewed_at = now() WHERE id = %s "
+                         "RETURNING visit_date", (status, visit_id)).fetchone()
         if not n:
             raise HTTPException(404, "unknown visit")
         conn.execute("UPDATE core.price_quotes SET status = %s WHERE visit_id = %s", (status, visit_id))
@@ -227,7 +227,7 @@ def review(visit_id: int, action: str, tasks: BackgroundTasks):
                             FROM core.qc_flags f
                             WHERE f.visit_id = %(v)s AND q.visit_id = %(v)s AND f.severity = 'hold'
                               AND f.vendor_id = q.vendor_id AND f.commodity_id = q.commodity_id""", {"v": visit_id})
-    tasks.add_task(analytics.recompute)
+    tasks.add_task(analytics.recompute, from_date=n[0])
     return {"visit_id": visit_id, "status": status, "action": action}
 
 

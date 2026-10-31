@@ -28,7 +28,7 @@ def run_once(client: httpx.Client, full_refresh: bool = False) -> dict:
         done = ingest.process_pending(conn)
         if full_refresh or len(done) > 100:   # large backfill: older than the refresh policy window
             refresh_aggregates(conn)
-    metrics = analytics.recompute() if done else 0
+    metrics = analytics.recompute(from_date=min(d["date"] for d in done)) if done else 0
     return {"fetched": fetched, "processed": len(done), "metric_rows": metrics}
 
 

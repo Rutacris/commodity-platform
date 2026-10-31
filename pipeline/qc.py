@@ -49,9 +49,67 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def run(cur, visit: dict, quotes: list[dict], pilot: tuple[date, date] | None = None) -> VisitQC:
+class History:
+    """Per-batch cache of the history the checks compare against, so a batch of submissions does not
+    query the same enumerator history and photo hashes once per visit. Only successfully stored visits
+    are added (see record), so a failed submission never leaks into later checks."""
+
+    def __init__(self, cur):
+        self.cur = cur
+        self.rates: dict[int, list[tuple[date, float]]] = {}
+        self.photos: dict[str, str] | None = None
+
+    def enumerator_rates(self, enumerator_id: int, exclude_visit: int) -> list[float]:
+        if enumerator_id not in self.rates:
+            self.rates[enumerator_id] = self.cur.execute(
+                """SELECT visit_date, duration_s::float / n_quotes FROM core.visits
+                   WHERE enumerator_id = %s AND id <> %s AND n_quotes > 0
+                   ORDER BY visit_date DESC LIMIT 30""", (enumerator_id, exclude_visit)).fetchall()
+        return [r for _, r in self.rates[enumerator_id]]
+
+    def photo_seen(self, photo_hash: str, exclude_visit: int) -> str | None:
+        if self.photos is None:
+            self.photos = {}
+            for h, u in self.cur.execute("SELECT photo_hash, kobo_uuid FROM core.visits "
+                                         "WHERE photo_hash IS NOT NULL AND id <> %s ORDER BY id", (exclude_visit,)):
+                self.photos.setdefault(h, u)
+        return self.photos.get(photo_hash)
+
+    def vendor_history(self, vendor_ids: list[int], before) -> tuple[dict, dict]:
+        """Last reported price (any status) and last 6 accepted prices per vendor, in one round trip.
+        Each subquery is a LIMIT on the (vendor_id, observed_at DESC) index, so cost does not grow with history."""
+        prev, recent = {}, {}
+        for vid, last, six in self.cur.execute(
+                """SELECT v.vid,
+                          (SELECT q.price_rwf FROM core.price_quotes q
+                           WHERE q.vendor_id = v.vid AND q.observed_at < %(t)s AND q.price_rwf IS NOT NULL
+                           ORDER BY q.observed_at DESC LIMIT 1),
+                          ARRAY(SELECT q.price_rwf FROM core.price_quotes q
+                                WHERE q.vendor_id = v.vid AND q.status = 'ok' AND q.observed_at < %(t)s
+                                  AND q.price_rwf > 0
+                                ORDER BY q.observed_at DESC LIMIT 6)
+                   FROM unnest(%(v)s::int[]) AS v(vid)""", {"v": vendor_ids, "t": before}):
+            if last is not None:
+                prev[vid] = last
+            if six:
+                recent[vid] = six
+        return prev, recent
+
+    def record(self, visit: dict) -> None:
+        if visit["enumerator_id"] in self.rates and visit["n_quotes"] > 0:
+            rows = self.rates[visit["enumerator_id"]]
+            rows.append((visit["visit_date"], visit["duration_s"] / visit["n_quotes"]))
+            rows.sort(key=lambda r: r[0], reverse=True)
+            del rows[30:]
+        if self.photos is not None and visit["photo_hash"]:
+            self.photos.setdefault(visit["photo_hash"], visit["kobo_uuid"])
+
+
+def run(cur, visit: dict, quotes: list[dict], pilot: tuple[date, date] | None = None,
+        history: History | None = None) -> VisitQC:
     """visit: dict with keys from core.visits (+ session, makeup, local_start_hour, n_quotes).
     quotes: list of dicts (commodity_id, vendor_id, price_rwf, available)."""
+    history = history or History(cur)
     qc = VisitQC()
     priced = [q for q in quotes if q["available"] and q["price_rwf"] is not None and q["vendor_id"]]
 
@@ -74,13 +132,7 @@ def run(cur, visit: dict, quotes: list[dict], pilot: tuple[date, date] | None = 
 
     # Speed: seconds per quote against the enumerator's own history
     n = max(len(priced), 1)
-    hist = cur.execute(
-        """SELECT v.duration_s::float / nullif(count(q.*), 0)
-           FROM core.visits v JOIN core.price_quotes q ON q.visit_id = v.id AND q.vendor_id <> 0
-           WHERE v.enumerator_id = %s AND v.id <> %s
-           GROUP BY v.id ORDER BY v.visit_date DESC LIMIT 30""",
-        (visit["enumerator_id"], visit["id"])).fetchall()
-    rates = [r[0] for r in hist if r[0]]
+    rates = history.enumerator_rates(visit["enumerator_id"], visit["id"])
     if len(rates) >= 5:
         own = visit["duration_s"] / n
         if own < SPEED_RATIO * median(rates):
@@ -91,18 +143,13 @@ def run(cur, visit: dict, quotes: list[dict], pilot: tuple[date, date] | None = 
     if not visit["photo_hash"]:
         qc.flags.append(Flag("photo_missing", "flag", {}))
     else:
-        dup = cur.execute("SELECT kobo_uuid FROM core.visits WHERE photo_hash = %s AND id <> %s LIMIT 1",
-                          (visit["photo_hash"], visit["id"])).fetchone()
+        dup = history.photo_seen(visit["photo_hash"], visit["id"])
         if dup:
-            qc.flags.append(Flag("photo_reused", "hold", {"also_in": dup[0]}))
+            qc.flags.append(Flag("photo_reused", "hold", {"also_in": dup}))
 
     # Price patterns
     if priced:
-        prev = dict(cur.execute(
-            """SELECT DISTINCT ON (vendor_id) vendor_id, price_rwf FROM core.price_quotes
-               WHERE vendor_id = ANY(%s) AND visit_id <> %s AND observed_at < %s AND price_rwf IS NOT NULL
-               ORDER BY vendor_id, observed_at DESC""",
-            ([q["vendor_id"] for q in priced], visit["id"], visit["started_at"])).fetchall())
+        prev, recent = history.vendor_history(sorted({q["vendor_id"] for q in priced}), visit["started_at"])
         comparable = [q for q in priced if q["vendor_id"] in prev]
         if len(comparable) >= 10:
             same = sum(q["price_rwf"] == prev[q["vendor_id"]] for q in comparable) / len(comparable)
@@ -121,15 +168,6 @@ def run(cur, visit: dict, quotes: list[dict], pilot: tuple[date, date] | None = 
                 qc.flags.append(Flag("identical_vendors", "flag", {"share": round(ident, 2)}))
 
         # Outliers against each vendor's recent accepted prices
-        recent = cur.execute(
-            """SELECT vendor_id, array_agg(price_rwf ORDER BY observed_at DESC) FROM (
-                 SELECT vendor_id, price_rwf, observed_at,
-                        row_number() OVER (PARTITION BY vendor_id ORDER BY observed_at DESC) rn
-                 FROM core.price_quotes
-                 WHERE vendor_id = ANY(%s) AND status = 'ok' AND observed_at < %s AND price_rwf > 0) t
-               WHERE rn <= 6 GROUP BY vendor_id""",
-            ([q["vendor_id"] for q in priced], visit["started_at"])).fetchall()
-        recent = dict(recent)
         for q in priced:
             h = recent.get(q["vendor_id"])
             if not h or len(h) < 3 or q["price_rwf"] <= 0:

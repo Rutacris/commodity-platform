@@ -73,12 +73,28 @@ From `python -m demo.truth_report` (also the dashboard's truth check):
 | Weekly change vs truth | correlation 0.94; median level error 0.7% | — |
 | Fuel pass-through | 5/5 fuel-sensitive goods within ±50% of the true elasticity | sign + ±50% |
 | Pilot variance decomposition | vendor sd 0.053 (true 0.05); afternoon effect −1.8% (true −2%) | ±30% |
-| Webhook → browser | ~1.3 s for visits, ~4 s including weekly metrics | < 10 s |
+| New collection day processed and metrics updated | ~0.45 s (was ~1.3 s) | < 10 s |
+| Two-year backfill (1,003 visits) | ~7 s end to end; quality checks 4.6 ms/visit, flat as history grows (was 20.5 ms and rising) | < 10 min |
 | Resilience (API down, 6 webhooks failed) | 6/6 recovered by polling, 0 duplicates | 0 lost |
 
 Honest limits: small fuel effects (0.05) on volatile fresh produce cannot be recovered from two years of
 weekly data (true value inside the 95% interval for 17/24 goods); anomaly thresholds are provisional,
 not WFP's verified ALPS cut-offs.
+
+## Performance
+
+Measured on the demo backfill before and after the performance pass (identical outputs: all QC flags,
+visit statuses and 9,887 weekly metric rows compared byte for byte):
+
+| Stage | Before | After |
+|---|---|---|
+| Processing + QC, 1,003 visits | 20.6 s (cost grew with history) | 4.6 s (≈1 s per 200 visits, flat) |
+| Weekly metrics after a new day | 1.1 s | 0.37 s |
+
+How: visits store their quote count (no chunk scans for the speed check); vendor history is fetched with
+index-bounded `LIMIT` lookups in one round trip; enumerator history and photo hashes are cached per batch;
+weekly metrics are recomputed only from the earliest affected week (every metric is backward-looking),
+with the rolling robust z-score vectorised.
 
 ## Tests
 
@@ -87,7 +103,7 @@ docker compose -f docker-compose.demo.yml run --rm \
   -e TEST_DATABASE_URL=postgresql://demo:demo@db:5432/commodities_demo_test worker python -m pytest -q tests
 ```
 
-11 tests: matched-sample Jevons, geometric means, seasonal anomaly score, mock Kobo paging/auth,
+13 tests: matched-sample Jevons, incremental-vs-full metrics, vectorised-vs-reference z-scores, geometric means, seasonal anomaly score, mock Kobo paging/auth,
 exactly-once ingestion, duplicate deliveries, QC vs injected misconduct, typos, "not available"
 handling, the tomato shortage flag, and the review "accept" rule.
 

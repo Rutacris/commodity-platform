@@ -8,11 +8,16 @@
   harmonics to the series' earlier weeks (at least 52), and express the gap between the observed and
   predicted level in residual standard deviations. Watch >= 2, unusual >= 3. Series with less than a
   year of history fall back to a robust z-score of the 4-week change. The WFP category cut-offs were
-  not verified; these thresholds are provisional. This is a provisional stand-in for WFP ALPS, without seasonal
-  adjustment.
+  not verified; these thresholds are provisional.
+
+Every metric for week W uses only weeks <= W, so after new data arrives only weeks from the earliest
+affected week onward are recomputed (recompute(from_date=...)); earlier rows cannot change.
 """
+from datetime import date, timedelta
+
 import numpy as np
 import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
 
 from pipeline.db import connect
 
@@ -49,27 +54,36 @@ def matched_change(vw: pd.DataFrame, lag: int) -> pd.Series:
 
 
 def robust_z(changes: pd.Series) -> pd.Series:
-    out = pd.Series(np.nan, index=changes.index)
-    vals = changes.to_numpy()
-    for i in range(len(vals)):
-        hist = vals[max(0, i - 52):i]
-        hist = hist[~np.isnan(hist)]
-        if len(hist) < MIN_HISTORY or np.isnan(vals[i]):
-            continue
-        med = np.median(hist)
-        mad = np.median(np.abs(hist - med)) * 1.4826
-        out.iloc[i] = (vals[i] - med) / max(mad, 0.01)
-    return out
+    """Robust z-score of each value against the previous 52 positions (median/MAD, NaNs skipped,
+    at least MIN_HISTORY values), computed for all positions at once."""
+    vals = changes.to_numpy(dtype=float)
+    n = len(vals)
+    if n == 0:
+        return pd.Series(dtype=float, index=changes.index)
+    win = sliding_window_view(np.concatenate([np.full(52, np.nan), vals]), 52)[:n]   # row i = vals[i-52:i]
+    count = (~np.isnan(win)).sum(axis=1)
+    ok = (count >= MIN_HISTORY) & ~np.isnan(vals)
+    out = np.full(n, np.nan)
+    if ok.any():
+        w = win[ok]
+        med = np.nanmedian(w, axis=1)
+        mad = np.nanmedian(np.abs(w - med[:, None]), axis=1) * 1.4826
+        out[ok] = (vals[ok] - med) / np.maximum(mad, 0.01)
+    return pd.Series(out, index=changes.index)
 
 
-def seasonal_z(weeks: pd.Series, lp: pd.Series) -> pd.Series:
-    """Out-of-sample residual z-score of each week against trend + 2 harmonics fitted on earlier weeks."""
+def seasonal_z(weeks: pd.Series, lp: pd.Series, from_week: date | None = None) -> pd.Series:
+    """Out-of-sample residual z-score of each week against trend + 2 harmonics fitted on earlier weeks.
+    Weeks before from_week are left NaN (not needed by an incremental recompute)."""
     t = (pd.to_datetime(weeks) - pd.Timestamp("2000-01-03")).dt.days.to_numpy() / 7.0
     w = 2 * np.pi * t / 52.18
     X = np.column_stack([np.ones_like(t), t, np.sin(w), np.cos(w), np.sin(2 * w), np.cos(2 * w)])
     y = lp.to_numpy()
     out = np.full(len(y), np.nan)
-    for i in range(MIN_SEASONAL_HISTORY, len(y)):
+    first = MIN_SEASONAL_HISTORY
+    if from_week is not None:
+        first = max(first, int(np.searchsorted(np.array(list(weeks), dtype=object), from_week)))
+    for i in range(first, len(y)):
         Xh, yh = X[max(0, i - 156):i], y[max(0, i - 156):i]
         beta, *_ = np.linalg.lstsq(Xh, yh, rcond=None)
         resid = yh - Xh @ beta
@@ -78,7 +92,9 @@ def seasonal_z(weeks: pd.Series, lp: pd.Series) -> pd.Series:
     return pd.Series(out, index=lp.index)
 
 
-def compute(df: pd.DataFrame) -> pd.DataFrame:
+def compute(df: pd.DataFrame, from_week: date | None = None) -> pd.DataFrame:
+    """Weekly metrics for every (commodity, market, week); with from_week, only rows for weeks
+    >= from_week are returned (all history is still used as input)."""
     vw = df.groupby(["commodity_id", "market_id", "vendor_id", "week"], as_index=False)["lp"].mean()
     level = vw.groupby(["commodity_id", "market_id", "week"]).agg(
         lp=("lp", "mean"), n_vendors=("vendor_id", "nunique"))
@@ -96,7 +112,7 @@ def compute(df: pd.DataFrame) -> pd.DataFrame:
     out = out.reset_index(drop=True)
     out["z_level"] = np.nan
     for idx in out.groupby(["commodity_id", "market_id"]).groups.values():
-        out.loc[idx, "z_level"] = seasonal_z(out.loc[idx, "week"], out.loc[idx, "lp"]).to_numpy()
+        out.loc[idx, "z_level"] = seasonal_z(out.loc[idx, "week"], out.loc[idx, "lp"], from_week).to_numpy()
     g = out.groupby(["commodity_id", "market_id"], group_keys=False)
     out["d1z"] = g["d1"].apply(robust_z)
     out["z"] = out["z_level"].fillna(g["d4"].apply(robust_z))
@@ -106,18 +122,31 @@ def compute(df: pd.DataFrame) -> pd.DataFrame:
     out["price"] = np.exp(out["lp"])
     out["pct_wow"] = np.expm1(out["d1"]) * 100
     out["pct_4w"] = np.expm1(out["d4"]) * 100
+    if from_week is not None:
+        out = out[out["week"] >= from_week]
     return out
 
 
-def recompute() -> int:
+def week_start(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+def recompute(from_date: date | str | None = None) -> int:
+    """Rebuild weekly metrics; with from_date, only weeks from that date's week onward."""
+    if isinstance(from_date, str):
+        from_date = date.fromisoformat(from_date)
+    from_week = week_start(from_date) if from_date else None
     with connect() as conn:
         with conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (ANALYTICS_LOCK,))
             df = load_quotes(conn)
-            conn.execute("DELETE FROM serving.weekly_metrics")
+            if from_week is None:
+                conn.execute("DELETE FROM serving.weekly_metrics")
+            else:
+                conn.execute("DELETE FROM serving.weekly_metrics WHERE week >= %s", (from_week,))
             if df.empty:
                 return 0
-            out = compute(df)
+            out = compute(df, from_week)
             with conn.cursor().copy(
                     "COPY serving.weekly_metrics (week, commodity_id, market_id, price, pct_wow, pct_4w, "
                     "n_quotes, n_vendors, z_change, z_level, anomaly) FROM STDIN") as cp:
